@@ -5,6 +5,26 @@
 #include <assert.h>
 #include <string.h>
 
+
+#if LUA_VERSION_NUM < 502
+	
+#define lua_rawlen(L, I) lua_objlen(L, I)
+#define luaL_newlib(L, R) {lua_newtable(L); luaL_register(L, NULL, R);}
+	
+#endif
+
+#if LUA_VERSION_NUM < 503
+
+static int
+lua_isinteger(lua_State *L, int index) {
+	int32_t x = (int32_t)lua_tointeger(L,index);
+	lua_Number n = lua_tonumber(L,index);
+	return ((lua_Number)x==n);
+}
+
+#endif
+
+
 #define TYPE_NIL 0
 #define TYPE_BOOLEAN 1
 // hibits 0 false 1 true
@@ -347,17 +367,6 @@ wb_table(lua_State *L, struct write_block *wb, int index, int depth) {
 	int array_size = wb_table_array(L, wb, index, depth);
 	wb_table_hash(L, wb, index, depth, array_size);
 }
-
-#if LUA_VERSION_NUM < 503
-
-static int
-lua_isinteger(lua_State *L, int index) {
-	int32_t x = (int32_t)lua_tointeger(L,index);
-	lua_Number n = lua_tonumber(L,index);
-	return ((lua_Number)x==n);
-}
-
-#endif
 
 static void
 pack_one(lua_State *L, struct write_block *b, int index, int depth) {
