@@ -5,6 +5,25 @@
 #include <assert.h>
 #include <string.h>
 
+#if LUA_VERSION_NUM < 502
+	
+#define lua_rawlen(L, I) lua_objlen(L, I)
+#define luaL_newlib(L, R) {lua_newtable(L); luaL_register(L, NULL, R);}
+	
+#endif
+
+#if LUA_VERSION_NUM < 503
+
+static int
+lua_isinteger(lua_State *L, int index) {
+	int32_t x = (int32_t)lua_tointeger(L,index);
+	lua_Number n = lua_tonumber(L,index);
+	return ((lua_Number)x==n);
+}
+
+#endif
+
+
 #define TYPE_NIL 0
 #define TYPE_BOOLEAN 1
 // hibits 0 false 1 true
@@ -348,17 +367,6 @@ wb_table(lua_State *L, struct write_block *wb, int index, int depth) {
 	wb_table_hash(L, wb, index, depth, array_size);
 }
 
-#if LUA_VERSION_NUM < 503
-
-static int
-lua_isinteger(lua_State *L, int index) {
-	int32_t x = (int32_t)lua_tointeger(L,index);
-	lua_Number n = lua_tonumber(L,index);
-	return ((lua_Number)x==n);
-}
-
-#endif
-
 static void
 pack_one(lua_State *L, struct write_block *b, int index, int depth) {
 	if (depth > MAX_DEPTH) {
@@ -670,6 +678,36 @@ _dump(lua_State *L) {
 	return 0;
 }
 
+static void*
+_lserialize(struct block *b, uint32_t * length) {
+	uint32_t len = 0;
+	memcpy(&len, b->buffer ,sizeof(len));
+
+	uint8_t * buffer = malloc(len);
+	uint8_t * ptr = buffer;
+	int sz = len;
+	while(len>0) {
+		if (len >= BLOCK_SIZE) {
+			memcpy(ptr, b->buffer, BLOCK_SIZE);
+			ptr += BLOCK_SIZE;
+			len -= BLOCK_SIZE;
+		} else {
+			memcpy(ptr, b->buffer, len);
+			break;
+		}
+		b = b->next;
+	}
+
+	buffer[0] = sz & 0xff;
+	buffer[1] = (sz>>8) & 0xff;
+	buffer[2] = (sz>>16) & 0xff;
+	buffer[3] = (sz>>24) & 0xff;
+	
+	*length = sz;
+	return buffer;
+}
+
+
 static int
 lserialize(lua_State *L) {
 	struct block *b = lua_touserdata(L,1);
@@ -760,6 +798,69 @@ deseristring(lua_State *L) {
 	return lua_gettop(L) - 1;
 }
 
+uint8_t magic_num1 = 123;
+uint8_t magic_num2 = 23;
+uint8_t magic_num3 = 55;
+
+static int
+_fread(lua_State *L) {
+	const char * filename = luaL_checkstring(L, 1);
+	uint32_t len = 0;
+	uint8_t _magic_num1 = 0;
+	uint8_t _magic_num2 = 0;
+	uint8_t _magic_num3 = 0;
+	FILE * f = fopen(filename, "r");
+	if(f == NULL) return luaL_error(L, "fread file \"%s\" open error");
+	fread(&_magic_num1, 1, sizeof(_magic_num1), f);
+	if (_magic_num1 != magic_num1) return luaL_error(L, "fread invalid magic num #1");
+	fread(&len, 1, sizeof(len), f);
+	if (len == 0) return luaL_error(L, "zero buffer size");
+	void * buffer = malloc(len);
+	if (buffer == NULL) return luaL_error(L, "fread buffer memory allocate error");
+
+	fread(&_magic_num2, 1, sizeof(_magic_num2), f);
+	if (_magic_num2 != magic_num2) return luaL_error(L, "invalid magic num #2");
+	fread(buffer, 1, len, f);
+	fread(&_magic_num3, 1, sizeof(_magic_num3), f);
+	if (_magic_num3 != magic_num3) return luaL_error(L, "invalid magic num #3");
+	fclose(f);
+	
+	lua_settop(L,0);
+	deserialize_buffer(L, buffer);
+	return lua_gettop(L);
+}
+
+static int
+_fwrite(lua_State *L) {
+	uint32_t len = 0;
+	struct block *b;
+	if(lua_type(L, 1) != LUA_TUSERDATA){
+		lpack(L);
+		b = lua_touserdata(L, -1);
+	}else{
+		b = lua_touserdata(L, 1);
+	}
+	if (b==NULL) return luaL_error(L, "fwrite null pointer");
+	const char * filename = luaL_checkstring(L, 2);
+	
+	void * buffer = _lserialize(b, &len);
+	if (len == 0) return luaL_error(L, "fwrite zero buffer size");
+	if (buffer == NULL) return luaL_error(L, "fwrite serialize null pointer");
+
+	FILE * f = fopen(filename, "w+");
+	if(f == NULL) return luaL_error(L, "fwrite file \"%s\" open error");
+
+	fwrite(&magic_num1, 1, sizeof(magic_num1), f);
+	fwrite(&len, 1, sizeof(len), f);
+	fwrite(&magic_num2, 1, sizeof(magic_num2), f);
+	fwrite(buffer, 1, len, f);
+	fwrite(&magic_num3, 1, sizeof(magic_num3), f);
+	fclose(f);
+	free(buffer);
+	lua_pushnumber(L, len);
+	return 1;
+}
+
 int
 luaopen_serialize(lua_State *L) {
 	luaL_Reg l[] = {
@@ -771,6 +872,8 @@ luaopen_serialize(lua_State *L) {
 		{ "serialize_string", seristring },
 		{ "deseristring_string", deseristring },
 		{ "dump", _dump },
+		{ "fread", _fread },
+		{ "fwrite", _fwrite },
 		{ NULL, NULL },
 	};
 	luaL_newlib(L,l);
