@@ -29,3 +29,8 @@ local addressbook_filename = "addressbook.bin";
 s.fwrite(addressbook, addressbook_filename);
 local addressbook2 = s.fread(addressbook_filename);
 assert(recursive_compare(addressbook, addressbook2));
+
+s.fwrite(s.pack(addressbook), addressbook_filename);
+local addressbook3 = s.unpack(s.fread(addressbook_filename));
+assert(recursive_compare(addressbook, addressbook3));
+assert(recursive_compare(addressbook2, addressbook3));
